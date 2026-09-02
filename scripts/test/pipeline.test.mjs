@@ -301,6 +301,30 @@ test("collect-findings rejects an unknown command", () => {
   assert.match(res.stderr, /unknown command/);
 });
 
+// ---------------------------------------------------------- orchestrator
+
+test("a dry run needs no agent CLI, because it spawns nothing", () => {
+  // CI is the faithful version of this test - the runners have no agent CLI at
+  // all - but naming an agent that is certainly absent covers the same branch
+  // locally, where one usually is installed.
+  const res = run("run-review.mjs", ["working", "--effort", "quick", "--dry-run", "--agent", "gemini"]);
+  assert.equal(res.status, 0, res.stderr);
+  assert.match(res.stdout, /dry run/);
+  assert.match(res.stdout, /nothing spawned/);
+});
+
+test("an unknown effort is refused rather than silently treated as standard", () => {
+  const res = run("run-review.mjs", ["--effort", "exhaustive", "--dry-run"]);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /--effort must be quick, standard or deep/);
+});
+
+test("an unknown angle name is refused rather than quietly skipped", () => {
+  const res = run("run-review.mjs", ["working", "--angles", "line-by-line,telepathy", "--dry-run"]);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /unknown angle/);
+});
+
 // ------------------------------------------------------------- consistency
 
 test("the angle list agrees across angles.json, agents/, SKILL.md and README", () => {

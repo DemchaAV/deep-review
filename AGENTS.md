@@ -26,7 +26,7 @@ That is `check-consistency.mjs` followed by the test suite. Both must pass
 before a commit. Node 20 or newer; no dependencies, and it should stay that way.
 
 ```bash
-npm test                      # node --test over scripts/test/
+npm test                      # scripts/run-tests.mjs over scripts/test/
 npm run check                 # the angle-list consistency gate alone
 node scripts/run-review.mjs --dry-run   # writes prompts, spawns nothing
 ```

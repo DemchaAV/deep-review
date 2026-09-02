@@ -15,7 +15,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test \"scripts/test/**/*.test.mjs\"",
+    "test": "node scripts/run-tests.mjs scripts/test",
     "check": "node scripts/check-consistency.mjs",
     "verify": "npm run check && npm test",
     "review": "node scripts/run-review.mjs",

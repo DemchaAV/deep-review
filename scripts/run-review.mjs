@@ -327,7 +327,10 @@ async function main() {
     return;
   }
 
-  const agent = opts.agent || detectAgent();
+  // A dry run spawns nothing, so it must not require an agent CLI to exist:
+  // inspecting the prompts and the plan is exactly what you do on a machine
+  // that has no agent installed, CI included.
+  const agent = opts.agent || detectAgent() || (opts.dryRun ? "claude" : null);
   if (!agent) throw new Error("no agent CLI found on PATH - install claude, codex or gemini, or pass --agent");
   if (!AGENTS[agent]) throw new Error(`unknown agent "${agent}" - expected claude, codex or gemini`);
   if (!opts.dryRun && !which(AGENTS[agent].bin)) throw new Error(`"${AGENTS[agent].bin}" is not on PATH`);

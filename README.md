@@ -216,7 +216,7 @@ Some consequences worth knowing:
 
 ```bash
 npm run verify                        # consistency gate + tests, no API calls
-npm test                              # node --test, 14 cases
+npm test                              # node --test over scripts/test/
 node scripts/run-review.mjs --dry-run # writes prompts, spawns nothing
 ```
 
@@ -238,6 +238,7 @@ scripts/prepare-review.mjs    target → run directory
 scripts/run-review.mjs        the portable fan-out
 scripts/collect-findings.mjs  dedupe, then rank
 scripts/check-consistency.mjs the gate that stops the four lists drifting
+scripts/run-tests.mjs         portable test discovery, Node 20 and up
 ```
 
 The angles are **agents**, not skills, because agents are the unit of
