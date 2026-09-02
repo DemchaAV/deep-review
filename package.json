@@ -1,0 +1,24 @@
+{
+  "name": "deep-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-angle parallel code review for coding agents: ten finder angles at once, an adversarial verify pass, one ranked report.",
+  "license": "MIT",
+  "author": "DemchaAV",
+  "homepage": "https://github.com/DemchaAV/deep-review",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DemchaAV/deep-review.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"scripts/test/**/*.test.mjs\"",
+    "check": "node scripts/check-consistency.mjs",
+    "verify": "npm run check && npm test",
+    "review": "node scripts/run-review.mjs",
+    "install-client": "node scripts/install-client.mjs"
+  }
+}

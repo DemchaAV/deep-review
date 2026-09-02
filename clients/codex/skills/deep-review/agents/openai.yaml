@@ -1,0 +1,6 @@
+interface:
+  display_name: "Deep Review"
+  short_description: "Multi-angle parallel code review with an adversarial verify pass"
+  default_prompt: "Use $deep-review to review the current diff, a branch, or a PR from ten independent angles at once."
+policy:
+  allow_implicit_invocation: true

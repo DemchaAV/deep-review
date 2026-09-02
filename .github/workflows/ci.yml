@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    # Developed on Windows, so Windows is a first-class target rather than an
+    # afterthought: the shell-quoting and path-separator behaviour this harness
+    # depends on differs there, and a Linux-only matrix would not see it.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # prepare-review.mjs resolves a merge-base, which needs real history.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Consistency gate
+        run: npm run check
+
+      - name: Tests
+        run: npm test
+
+      - name: Orchestrator dry run
+        # Proves the whole pipeline up to the point of spawning agents: target
+        # resolution, diff extraction, language detection, angle selection and
+        # prompt assembly. The probe file exists because "working" is the only
+        # target guaranteed to have content - on a push to the default branch
+        # every commit range is empty, and prepare-review rightly refuses those.
+        shell: bash
+        run: |
+          printf '// a file for the dry run to find\n' > ci-probe.mjs
+          node scripts/run-review.mjs working --effort deep --dry-run
+          rm ci-probe.mjs
+
+      - name: Client installers dry run
+        shell: bash
+        run: |
+          node scripts/install-client.mjs --list
+          node scripts/install-client.mjs antigravity --workspace . --dry-run

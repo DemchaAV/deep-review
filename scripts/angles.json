@@ -1,0 +1,80 @@
+{
+  "$comment": "Source of truth for which angles exist, which agent definition backs each one, and which effort preset includes it. scripts/run-review.mjs reads this; skills/deep-review/SKILL.md carries the same table for the in-Claude path; scripts/check-consistency.mjs proves the two agree.",
+  "angles": [
+    {
+      "id": "line-by-line",
+      "agent": "dr-line-by-line",
+      "owns": "every hunk and its enclosing function",
+      "efforts": ["quick", "standard", "deep"]
+    },
+    {
+      "id": "removed-behavior",
+      "agent": "dr-removed-behavior",
+      "owns": "what the deleted lines used to enforce",
+      "efforts": ["quick", "standard", "deep"]
+    },
+    {
+      "id": "cross-file",
+      "agent": "dr-cross-file",
+      "owns": "consumers of everything that changed",
+      "efforts": ["quick", "standard", "deep"]
+    },
+    {
+      "id": "platform",
+      "agent": "dr-platform-pitfalls",
+      "owns": "the language's and the OS's classic traps",
+      "efforts": ["quick", "standard", "deep"],
+      "needsPitfalls": true
+    },
+    {
+      "id": "wrapper",
+      "agent": "dr-wrapper-correctness",
+      "owns": "wrappers, adapters, proxies, projections",
+      "efforts": ["standard", "deep"]
+    },
+    {
+      "id": "conventions",
+      "agent": "dr-conventions",
+      "owns": "the repo's own CLAUDE.md / AGENTS.md rules",
+      "efforts": ["standard", "deep"],
+      "needsGoverningDocs": true
+    },
+    {
+      "id": "altitude",
+      "agent": "dr-altitude",
+      "owns": "whether each fix is at the right depth",
+      "efforts": ["standard", "deep"]
+    },
+    {
+      "id": "reuse",
+      "agent": "dr-reuse",
+      "owns": "new code that re-implements an existing helper",
+      "efforts": ["deep"]
+    },
+    {
+      "id": "simplification",
+      "agent": "dr-simplification",
+      "owns": "complexity the diff adds",
+      "efforts": ["deep"]
+    },
+    {
+      "id": "efficiency",
+      "agent": "dr-efficiency",
+      "owns": "work the diff wastes",
+      "efforts": ["deep"]
+    }
+  ],
+  "verifier": "dr-verifier",
+  "pitfallsByLanguage": {
+    "javascript": ["javascript.md"],
+    "typescript": ["typescript.md", "javascript.md"],
+    "python": ["python.md"],
+    "java": ["java.md"],
+    "kotlin": ["java.md"],
+    "go": ["go.md"],
+    "rust": ["rust.md"],
+    "shell": ["shell.md"],
+    "powershell": ["shell.md"]
+  },
+  "pitfallsFallback": ["generic.md"]
+}
