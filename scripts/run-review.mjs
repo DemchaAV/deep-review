@@ -113,8 +113,13 @@ function spawnAgent(bin, args, options) {
   return spawn([bin, ...args].map(winQuote).join(" "), { ...options, shell: true });
 }
 
+// The AGENTS table above is the declaration. Deriving from it means adding a
+// CLI cannot leave a stale copy behind in a detector or an error message - the
+// list used to be written out three times beside the table that defines it.
+const AGENT_NAMES = Object.keys(AGENTS);
+
 function detectAgent() {
-  for (const name of ["claude", "codex", "gemini"]) if (which(name)) return name;
+  for (const name of AGENT_NAMES) if (which(name)) return name;
   return null;
 }
 
@@ -162,14 +167,19 @@ function parseArgs(argv) {
   return opts;
 }
 
+const effortSize = (effort) => ANGLES.angles.filter((a) => a.efforts.includes(effort)).length;
+
+// Derived, not written out. --help used to carry its own copy of the effort
+// counts, in a shape the consistency gate cannot read, inside a file the gate
+// never opens - a fifth statement of the angle set with nothing holding it true.
 const USAGE = `Usage: node run-review.mjs [target] [options]
 
 Runs the full deep review by spawning one headless agent process per angle.
 
   target             working (default) | branch | <PR number> | <ref> | <base>..<head>
 
-  --agent <name>     claude | codex | gemini   (default: the first one installed)
-  --effort <level>   quick (4 angles) | standard (7, default) | deep (10)
+  --agent <name>     ${AGENT_NAMES.join(" | ")}   (default: the first one installed)
+  --effort <level>   quick (${effortSize("quick")}) | standard (${effortSize("standard")}, default) | deep (${effortSize("deep")})
   --angles a,b,c     explicit angle list, overrides --effort
   --concurrency <n>  how many agent processes at once (default 5)
   --model <name>     model to pass to the agent CLI
@@ -345,8 +355,8 @@ async function main() {
   // inspecting the prompts and the plan is exactly what you do on a machine
   // that has no agent installed, CI included.
   const agent = opts.agent || detectAgent() || (opts.dryRun ? "claude" : null);
-  if (!agent) throw new Error("no agent CLI found on PATH - install claude, codex or gemini, or pass --agent");
-  if (!AGENTS[agent]) throw new Error(`unknown agent "${agent}" - expected claude, codex or gemini`);
+  if (!agent) throw new Error(`no agent CLI found on PATH - install ${AGENT_NAMES.join(", ")}, or pass --agent`);
+  if (!AGENTS[agent]) throw new Error(`unknown agent "${agent}" - expected ${AGENT_NAMES.join(", ")}`);
   if (!opts.dryRun && !which(AGENTS[agent].bin)) throw new Error(`"${AGENTS[agent].bin}" is not on PATH`);
 
   process.stdout.write(`\n[1/5] preparing\n`);
@@ -408,6 +418,16 @@ async function main() {
     };
   });
 
+  // Guarding the pre-drop selection and not this list let an explicit --angles
+  // naming nothing but gated angles spawn no agents at all and still print
+  // "0 confirmed out of 0 clusters" with exit 0 - a clean bill of health from a
+  // review that read nothing.
+  if (finderTasks.length === 0) {
+    throw new Error(
+      `every selected angle was dropped for this diff (${dropped.join("; ")}), so nothing would be reviewed`
+    );
+  }
+
   process.stdout.write(
     `\n[2/5] ${finderTasks.length} finder angles via ${agent}, ${Math.min(opts.concurrency, finderTasks.length)} at a time\n` +
       `      ${finderTasks.map((t) => t.label).join(", ")}\n` +
@@ -467,6 +487,16 @@ async function main() {
   }
   const failed = finderResults.filter((r) => !r.ok).map((r) => r.label);
   if (failed.length) process.stdout.write(`      WARNING: non-zero exit from: ${failed.join(", ")}\n`);
+
+  // A caller chaining on this - `npm run review && git push` - has to be able to
+  // tell "the review found nothing" from "the review did not happen". Both
+  // printed a 0-of-0 report and exited 0, so a run where every angle died on a
+  // session limit read as a clean bill of health. AGENTS.md already makes the
+  // exit code a convention; this honours it.
+  if (silent.length || failed.length) {
+    process.stdout.write("      The review did not cover everything it was asked to; exiting non-zero.\n");
+    process.exitCode = 1;
+  }
 
   process.stdout.write(`\n${fs.readFileSync(path.join(runDir, "report.md"), "utf8")}\n`);
 }

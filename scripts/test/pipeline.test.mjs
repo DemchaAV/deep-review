@@ -355,6 +355,79 @@ test("finalize names the file when clusters.json is malformed", () => {
   assert.ok(!/Cannot destructure/.test(res.stderr), "a TypeError is not an error message");
 });
 
+test("a verifier's capitalised category still ranks as correctness", () => {
+  const dir = makeRun({
+    "line-by-line": [
+      { file: "src/a.mjs", line: 1, category: "correctness", summary: "alpha defect here", failure_scenario: "a", confidence: "high" },
+    ],
+    reuse: [
+      { file: "src/z.mjs", line: 1, category: "reuse", summary: "zeta duplicate helper", failure_scenario: "z", confidence: "high" },
+    ],
+  });
+  run("collect-findings.mjs", ["collect", dir]);
+  const ids = Object.fromEntries(clusters(dir).clusters.map((c) => [c.category, c.id]));
+  fs.writeFileSync(
+    path.join(dir, "verdicts", "b1.json"),
+    JSON.stringify({
+      verdicts: [
+        // Models capitalise and pad freely; the finder side was normalised and
+        // this side was not, so a confirmed correctness defect sorted last.
+        { cluster_id: ids.correctness, verdict: "CONFIRMED", reason: "r", category: " Correctness " },
+        { cluster_id: ids.reuse, verdict: "CONFIRMED", reason: "r" },
+      ],
+    }),
+    "utf8"
+  );
+  run("collect-findings.mjs", ["finalize", dir]);
+
+  const { findings } = JSON.parse(fs.readFileSync(path.join(dir, "report.json"), "utf8"));
+  assert.equal(findings[0].category, "correctness", "the category must be normalised");
+  assert.equal(findings[0].file, "src/a.mjs", "correctness outranks reuse");
+});
+
+test("a verifier's corrected summary drives the compact label too", () => {
+  const dir = makeRun({
+    "line-by-line": [
+      { file: "src/a.mjs", line: 1, category: "correctness", summary: "the finder's overstated claim", failure_scenario: "a", confidence: "high" },
+    ],
+  });
+  run("collect-findings.mjs", ["collect", dir]);
+  const id = clusters(dir).clusters[0].id;
+  fs.writeFileSync(
+    path.join(dir, "verdicts", "b1.json"),
+    JSON.stringify({
+      verdicts: [{ cluster_id: id, verdict: "CONFIRMED", reason: "r", summary: "the narrower true claim" }],
+    }),
+    "utf8"
+  );
+  run("collect-findings.mjs", ["finalize", dir]);
+
+  const [finding] = JSON.parse(fs.readFileSync(path.join(dir, "report.json"), "utf8")).findings;
+  assert.equal(finding.summary, "the narrower true claim");
+  assert.match(finding.short_summary, /narrower/, "the label must not keep the retracted wording");
+});
+
+test("a verifier's corrected file path is normalised like every other path", () => {
+  const dir = makeRun({
+    "line-by-line": [
+      { file: "src/a.mjs", line: 1, category: "correctness", summary: "alpha defect here", failure_scenario: "a", confidence: "high" },
+    ],
+  });
+  run("collect-findings.mjs", ["collect", dir]);
+  const id = clusters(dir).clusters[0].id;
+  fs.writeFileSync(
+    path.join(dir, "verdicts", "b1.json"),
+    JSON.stringify({
+      verdicts: [{ cluster_id: id, verdict: "CONFIRMED", reason: "r", corrected_file: ".\\src\\moved.mjs " }],
+    }),
+    "utf8"
+  );
+  run("collect-findings.mjs", ["finalize", dir]);
+
+  const [finding] = JSON.parse(fs.readFileSync(path.join(dir, "report.json"), "utf8")).findings;
+  assert.equal(finding.file, "src/moved.mjs");
+});
+
 test("finalize refuses an unknown verdict rather than silently ranking it", () => {
   const dir = makeRun({
     "line-by-line": [
@@ -472,6 +545,42 @@ test("prepare-review refuses an empty range instead of reviewing nothing", () =>
   assert.match(res.stderr, /nothing to review/);
 });
 
+test("a run whose every angle was dropped refuses instead of reporting 0 of 0", () => {
+  const repo = makeRepo();
+  // platform is dropped when the diff has no programming language. The
+  // conventions rule would be the other candidate, but it also consults the
+  // user-level CLAUDE.md, so it does not fire on a developer machine.
+  fs.rmSync(path.join(repo, "pending.mjs"));
+  fs.writeFileSync(path.join(repo, "settings.yml"), "answer: 42\n", "utf8");
+
+  const res = run("run-review.mjs", ["working", "--angles", "platform", "--dry-run"], repo);
+  assert.equal(res.status, 1, res.stdout);
+  assert.match(res.stderr, /every selected angle was dropped/);
+  assert.match(res.stderr, /nothing would be reviewed/);
+});
+
+test("the tool's own run directory is not fed back in as source to review", () => {
+  const repo = makeRepo();
+  // A repository that has not gitignored .deep-review/ - the common case for
+  // anyone installing this into their own project.
+  const first = JSON.parse(run("prepare-review.mjs", ["working", "--json"], repo).stdout);
+  assert.ok(fs.existsSync(path.join(first.outDir, "context.json")));
+
+  const second = JSON.parse(run("prepare-review.mjs", ["working", "--json"], repo).stdout);
+  const leaked = second.files.filter((f) => f.path.startsWith(".deep-review"));
+  assert.deepEqual(leaked, [], "the previous review's artefacts are not new source");
+});
+
+test("an untracked file with a non-ASCII name still reaches the review", () => {
+  const repo = makeRepo();
+  fs.writeFileSync(path.join(repo, "прочитай-меня.mjs"), "export const cyrillic = true;\n", "utf8");
+  const context = JSON.parse(run("prepare-review.mjs", ["working", "--json"], repo).stdout);
+  assert.ok(
+    context.files.some((f) => f.path === "прочитай-меня.mjs"),
+    "git C-quotes such names without -z, and the file was silently dropped"
+  );
+});
+
 test("an unknown effort is refused rather than silently treated as standard", () => {
   const res = run("run-review.mjs", ["--effort", "exhaustive", "--dry-run"]);
   assert.equal(res.status, 1);
@@ -527,14 +636,22 @@ function pushToBareRemote(repo) {
   return `${res.stdout || ""}${res.stderr || ""}`;
 }
 
+// context.json is written by prepare-review itself rather than hand-built to
+// the shape the hook greps for. A hand-built fixture keeps passing after the
+// producer changes its output format, and this hook cannot afford that: it
+// would go quiet and report every push as already reviewed.
 function recordRun(repo, { finished }) {
-  const headSha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
-  const runDir = path.join(repo, ".deep-review", "test-run");
-  fs.mkdirSync(runDir, { recursive: true });
-  fs.writeFileSync(path.join(runDir, "context.json"), JSON.stringify({ headSha }, null, 2), "utf8");
+  // An explicit range, because "branch" in a fresh repo resolves its own head
+  // as the base and correctly refuses an empty diff.
+  const res = run("prepare-review.mjs", ["HEAD~1..HEAD", "--json"], repo);
+  assert.equal(res.status, 0, `prepare-review failed building the fixture: ${res.stderr}`);
+  const context = JSON.parse(res.stdout);
   // prepare-review writes context.json before the first angle runs; only
   // finalize writes report.json. That difference is the whole point.
-  if (finished) fs.writeFileSync(path.join(runDir, "report.json"), JSON.stringify({ findings: [] }), "utf8");
+  if (finished) {
+    fs.writeFileSync(path.join(context.outDir, "report.json"), JSON.stringify({ findings: [] }), "utf8");
+  }
+  return context;
 }
 
 test("the hook warns when nothing has reviewed the commits being pushed", { skip: !HAVE_SH }, () => {

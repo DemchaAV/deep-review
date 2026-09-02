@@ -15,13 +15,14 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // --------------------------------------------------------------- taxonomy
 
 // Correctness-family findings assert the code is wrong; quality-family findings
 // assert it could be better. They are ranked apart, and they earn different
 // verification budgets, so the distinction is declared once here.
-const CORRECTNESS_CATEGORIES = new Set([
+export const CORRECTNESS_CATEGORIES = new Set([
   "correctness",
   "removed-behavior",
   "cross-file-break",
@@ -31,7 +32,7 @@ const CORRECTNESS_CATEGORIES = new Set([
   "test-coverage",
 ]);
 
-const CATEGORY_RANK = new Map([
+export const CATEGORY_RANK = new Map([
   ["correctness", 0],
   ["cross-file-break", 1],
   ["removed-behavior", 2],
@@ -84,6 +85,13 @@ function asLine(value) {
   if (value === null || value === undefined || value === "") return null;
   const line = Number(value);
   return Number.isFinite(line) && line > 0 ? line : null;
+}
+
+// Categories arrive from two different agents in two different files, and both
+// spell them freely. One normaliser, used on both sides.
+function normalizeCategory(value) {
+  const category = String(value ?? "").trim().toLowerCase();
+  return category || null;
 }
 
 function normalizePath(filePath) {
@@ -147,7 +155,7 @@ function loadCandidates(runDir) {
       }
       // Trimmed: a category arriving with stray whitespace matched no entry
       // in the rank map and silently left the correctness family.
-      const category = String(raw.category || "correctness").trim().toLowerCase();
+      const category = normalizeCategory(raw.category) || "correctness";
       candidates.push({
         id: `${angle}-${index + 1}`,
         angle,
@@ -355,12 +363,18 @@ function finalize(runDir, opts) {
     if (verdict.verdict === "REJECTED") continue;
     findings.push({
       cluster_id: cluster.id,
-      file: verdict.corrected_file || cluster.file,
+      file: verdict.corrected_file ? normalizePath(verdict.corrected_file) : cluster.file,
       line: asLine(verdict.corrected_line) ?? cluster.line,
-      category: verdict.category || cluster.category,
+      // The verifier writes this field too, and models capitalise freely.
+      // loadCandidates() normalises the finder side; skipping it here let a
+      // CONFIRMED "Correctness" miss the lowercase-keyed rank map and sort
+      // below every confirmed efficiency note.
+      category: normalizeCategory(verdict.category) || cluster.category,
       verdict: verdict.verdict,
       summary: verdict.summary || cluster.summary,
-      short_summary: (verdict.short_summary || cluster.summary).slice(0, 60),
+      // Falling back to the finder's summary put the retracted claim next to
+      // the corrected one whenever a verifier downgraded the wording.
+      short_summary: (verdict.short_summary || verdict.summary || cluster.summary).slice(0, 60),
       failure_scenario: verdict.failure_scenario || cluster.failure_scenario,
       reason: verdict.reason || "",
       angles: cluster.angles,
@@ -469,9 +483,15 @@ function main() {
   else throw new Error(`unknown command: ${command}`);
 }
 
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`collect-findings: ${error.message}\n`);
-  process.exitCode = 1;
+// Only run when invoked as a command. The consistency gate imports this module
+// to compare the real category maps, instead of regex-scraping them out of the
+// source text - which could only ever check key spellings and could not see the
+// correctness/quality split at all.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(`collect-findings: ${error.message}\n`);
+    process.exitCode = 1;
+  }
 }

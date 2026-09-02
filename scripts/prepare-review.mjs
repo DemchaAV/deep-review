@@ -79,10 +79,18 @@ function parseNumstat(raw) {
   return files;
 }
 
+// Returning a bare null collapsed five different failures - gh not installed,
+// not authenticated, no GitHub remote, unknown PR, rate limited - into one
+// message about authentication. gh already says which it was; forward it.
+// No shell: the sibling orchestrator refuses the args-array-plus-shell form
+// (DEP0190, unescaped concatenation) and these two should not disagree.
 function gh(args, { cwd = process.cwd() } = {}) {
-  const res = spawnSync("gh", args, { cwd, encoding: "utf8", shell: process.platform === "win32" });
-  if (res.error || res.status !== 0) return null;
-  return (res.stdout || "").trim();
+  const res = spawnSync("gh", args, { cwd, encoding: "utf8" });
+  if (res.error) {
+    return { ok: false, detail: res.error.code === "ENOENT" ? "gh is not installed or not on PATH" : res.error.message };
+  }
+  if (res.status !== 0) return { ok: false, detail: (res.stderr || "").trim() || `gh exited ${res.status}` };
+  return { ok: true, out: (res.stdout || "").trim() };
 }
 
 // ------------------------------------------------------------------ arg parse
@@ -151,13 +159,14 @@ function resolveTarget(rawTarget, cwd) {
   const prMatch = /^(?:pr:)?#?(\d+)$/.exec(target);
   if (prMatch) {
     const number = prMatch[1];
-    const json = gh(["pr", "view", number, "--json", "baseRefName,headRefName,headRefOid,title,url"], { cwd });
-    if (!json) {
+    const result = gh(["pr", "view", number, "--json", "baseRefName,headRefName,headRefOid,title,url"], { cwd });
+    if (!result.ok) {
       throw new Error(
-        `could not read PR #${number} via gh. Authenticate with "gh auth login", or pass an explicit range like "origin/main..HEAD".`
+        `could not read PR #${number} via gh: ${result.detail}\n` +
+          `Pass an explicit range instead, such as "origin/main..HEAD".`
       );
     }
-    const pr = JSON.parse(json);
+    const pr = JSON.parse(result.out);
     // Fetch so the head commits exist locally even when the PR came from a fork.
     git(["fetch", "origin", `pull/${number}/head`, pr.baseRefName], { cwd, allowFail: true });
     const headRef = git(["rev-parse", "--verify", "--quiet", pr.headRefOid], { cwd, allowFail: true }).ok
@@ -260,9 +269,20 @@ function diffArgs(range, { codeOnly, includeWorkingTree }) {
 // exactly the file that most needs reviewing. Synthesise its diff instead of
 // touching the index: `git add -N` would mutate the user's staging area, and a
 // review must not.
+// -z for two reasons. Without it git C-quotes any path containing a non-ASCII
+// byte or a quote, and the quoted spelling then fails `git diff --no-index`, so
+// the file is dropped from the review with no message at all. It also removes
+// the newline-in-a-filename hazard.
+//
+// The run directory is excluded explicitly: this tool writes it, and in a repo
+// that has not gitignored .deep-review/ every later review would fold the
+// previous review's diffs, findings and logs in as new source to review.
 function untrackedFiles(root) {
-  const out = git(["ls-files", "--others", "--exclude-standard"], { cwd: root, allowFail: true }).out;
-  return out ? out.split("\n").filter(Boolean) : [];
+  const out = git(["ls-files", "--others", "--exclude-standard", "-z"], { cwd: root, allowFail: true, raw: true }).out;
+  return out
+    .split("\0")
+    .filter(Boolean)
+    .filter((relPath) => !relPath.split("/")[0].startsWith(".deep-review"));
 }
 
 function untrackedDiff(root, relPath) {

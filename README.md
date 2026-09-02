@@ -39,7 +39,7 @@ is told the capability exists.
 | **Claude Code** | native — ten `Agent` calls in one message | `/deep-review` | plugin marketplace |
 | **Codex CLI** | `run-review.mjs` spawns `codex exec` per angle | `$deep-review` | `install-client.mjs codex` |
 | **Google Antigravity** | `run-review.mjs` spawns `gemini` per angle | `/deep-review` | `install-client.mjs antigravity` |
-| **Anything else / CI** | same script, `--agent <cli>` | `npm run review` |
+| **Anything else / CI** | same script, `--agent <cli>` | `node <checkout>/scripts/run-review.mjs` |
 | **git pre-push hook** | — asks, never runs | automatic on `git push` | clone and run |
 
 Claude Code gets the richest experience because it has a real parallel-subagent
@@ -122,7 +122,7 @@ on `PATH` is used. Nothing about this path requires an IDE.
 /deep-review 4821                       # a GitHub PR (needs gh)
 /deep-review branch                     # the current branch vs its merge-base
 /deep-review origin/main..HEAD          # any range
-/deep-review --effort deep              # all ten angles instead of seven
+/deep-review --effort deep              # `deep` (10 angles) instead of `standard` (7 angles)
 /deep-review --angles reuse,efficiency  # only those
 ```
 
@@ -246,7 +246,7 @@ Some consequences worth knowing:
 ```bash
 npm run verify                        # consistency gate + tests, no API calls
 npm test                              # node --test over scripts/test/
-node scripts/run-review.mjs --dry-run # writes prompts, spawns nothing
+node scripts/run-review.mjs branch --dry-run   # writes prompts, spawns nothing
 ```
 
 No dependencies, and it should stay that way. CI runs Ubuntu and Windows across

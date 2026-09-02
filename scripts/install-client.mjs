@@ -13,6 +13,7 @@
 //   node scripts/install-client.mjs antigravity --workspace ../my-project
 //   node scripts/install-client.mjs --list
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,6 +27,29 @@ const HOME = os.homedir();
 // inside markdown, and a Windows backslash there is an escape character in
 // every shell that is not cmd.exe.
 const ROOT_FOR_COMMANDS = ROOT.split(path.sep).join("/");
+
+// A path with a space in it, printed bare into a command the reader is meant to
+// copy, produces a command that does not run. Quote it when it needs quoting.
+const ROOT_FOR_DISPLAY = /[\s'"]/.test(ROOT_FOR_COMMANDS) ? `"${ROOT_FOR_COMMANDS}"` : ROOT_FOR_COMMANDS;
+
+// Ask git where hooks live rather than assuming .git/hooks. core.hooksPath
+// (husky v9, lefthook) moves them, a linked worktree and a submodule make .git
+// a file rather than a directory, and in all three cases writing to
+// <repo>/.git/hooks either fails with a raw ENOTDIR or succeeds while git
+// never runs the hook - the installer promising a gate that does not exist.
+function hooksDirFor(dir) {
+  const res = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-path", "hooks"], {
+    cwd: dir,
+    encoding: "utf8",
+  });
+  if (res.status === 0 && (res.stdout || "").trim()) return path.resolve((res.stdout || "").trim());
+  // git older than 2.31, or a placeholder path used only for display.
+  return path.join(dir, ".git", "hooks");
+}
+
+function isGitRepo(dir) {
+  return spawnSync("git", ["rev-parse", "--git-dir"], { cwd: dir, encoding: "utf8" }).status === 0;
+}
 
 const TARGETS = {
   codex: {
@@ -44,7 +68,7 @@ const TARGETS = {
     label: "pre-push hook",
     // Hooks are per-repository by definition, so there is no global form.
     global: null,
-    workspace: (dir) => path.join(dir, ".git", "hooks", "pre-push"),
+    workspace: (dir) => path.join(hooksDirFor(dir), "pre-push"),
     source: path.join(ROOT, "clients", "githook", "pre-push"),
     executable: true,
     // Both rules below used to live in main() - one as a comparison against
@@ -115,12 +139,21 @@ const USAGE = `Usage: node install-client.mjs <client> [options]
 
 Claude Code installs differently - it takes this repository directly:
 
-  claude plugin marketplace add ${ROOT_FOR_COMMANDS}
+  claude plugin marketplace add ${ROOT_FOR_DISPLAY}
   claude plugin install deep-review@deep-review
 `;
 
+// Two spellings of the same path. The plain one goes into markdown; the _SH one
+// goes inside single quotes in a shell script, where an apostrophe in the path
+// would otherwise close the quote and turn the file into a syntax error.
+const ROOT_FOR_SINGLE_QUOTES = ROOT_FOR_COMMANDS.split("'").join(`'\\''`);
+
 function render(text) {
-  return text.split("{{DEEP_REVIEW_ROOT}}").join(ROOT_FOR_COMMANDS);
+  return text
+    .split("{{DEEP_REVIEW_ROOT_SH}}")
+    .join(ROOT_FOR_SINGLE_QUOTES)
+    .split("{{DEEP_REVIEW_ROOT}}")
+    .join(ROOT_FOR_COMMANDS);
 }
 
 // Whether a file is rendered is a property of the target, not a guess from its
@@ -166,7 +199,7 @@ function main() {
   if (opts.target === "claude") {
     process.stdout.write(
       `Claude Code takes this repository as a plugin marketplace:\n\n` +
-        `  claude plugin marketplace add ${ROOT_FOR_COMMANDS}\n` +
+        `  claude plugin marketplace add ${ROOT_FOR_DISPLAY}\n` +
         `  claude plugin install deep-review@deep-review\n\n` +
         `Then use /deep-review. Nothing to copy.\n`
     );
@@ -200,16 +233,23 @@ function main() {
   const workspace = opts.workspace || (target.global === null ? process.cwd() : null);
   const destination = workspace ? target.workspace(path.resolve(workspace)) : target.global();
 
-  if (target.requiresGitRepo && !fs.existsSync(path.join(path.resolve(workspace), ".git"))) {
+  // Asking git, not looking for a .git directory: a linked worktree and a
+  // submodule both have a .git file, and both are perfectly valid here.
+  if (target.requiresGitRepo && !isGitRepo(path.resolve(workspace))) {
     throw new Error(`not a git repository: ${path.resolve(workspace)}`);
   }
 
   const existed = fs.existsSync(destination);
   // Overwriting somebody else's hook loses work that has no other copy. Ours is
   // recognisable by its own marker; anything else needs an explicit --force.
-  if (existed && target.marker && !opts.force) {
+  //
+  // Keyed on `executable`, not on `marker`: making the guard conditional on the
+  // optional field meant a future hook target that simply forgot to declare a
+  // marker would overwrite a hand-written hook unguarded - the omission with no
+  // other visible effect silently removing the protection.
+  if (existed && target.executable && !opts.force) {
     const current = fs.readFileSync(destination, "utf8");
-    if (!current.includes(target.marker)) {
+    if (!target.marker || !current.includes(target.marker)) {
       throw new Error(
         `${destination} already exists and was not written by deep-review. ` +
           `Merge it by hand, or pass --force to replace it.`
@@ -225,7 +265,7 @@ function main() {
   process.stdout.write(
     `${opts.dryRun ? "would install" : existed ? "reinstalled" : "installed"} ${target.label}\n` +
       written.map((file) => `  ${file}\n`).join("") +
-      `\n  checkout referenced as ${ROOT_FOR_COMMANDS}\n` +
+      `\n  checkout referenced as ${ROOT_FOR_DISPLAY}\n` +
       (target.after ? `\n${target.after.map((line) => `  ${line}\n`).join("")}` : "")
   );
   if (!opts.dryRun) {

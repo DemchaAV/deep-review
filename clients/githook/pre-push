@@ -60,10 +60,16 @@ printf '\n' >&2
 printf '  Review before this becomes a pull request:\n' >&2
 printf '    /deep-review branch\n' >&2
 printf '      in a Claude Code, Codex or Antigravity session, or from a terminal:\n' >&2
-# An absolute path into the deep-review checkout, substituted at install time.
-# "npm run review" only works inside deep-review's own repository, and this hook
-# runs in somebody else's.
-printf '    node {{DEEP_REVIEW_ROOT}}/scripts/run-review.mjs branch\n' >&2
+# An absolute path into the deep-review checkout, substituted at install time and
+# escaped there for this single-quoted context. "npm run review" only works
+# inside deep-review's own repository, and this hook runs in somebody else's.
+#
+# The path is passed as an ARGUMENT and never spliced into a printf format: in a
+# format a % would be read as a conversion specification, and an apostrophe in
+# the path would close the quote and make the whole file a syntax error -
+# rejecting exactly the pushes this hook is only meant to warn about.
+deep_review_root='{{DEEP_REVIEW_ROOT_SH}}'
+printf '    node %s/scripts/run-review.mjs branch\n' "$deep_review_root" >&2
 printf '\n' >&2
 
 if [ "${DEEP_REVIEW_REQUIRE:-0}" = "1" ]; then

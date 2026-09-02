@@ -28,7 +28,7 @@ before a commit. Node 20 or newer; no dependencies, and it should stay that way.
 ```bash
 npm test                      # scripts/run-tests.mjs over scripts/test/
 npm run check                 # the angle-list consistency gate alone
-node scripts/run-review.mjs --dry-run   # writes prompts, spawns nothing
+node scripts/run-review.mjs branch --dry-run   # writes prompts, spawns nothing
 ```
 
 `--dry-run` is how you exercise the orchestrator without spending money. Use it.
@@ -38,7 +38,9 @@ node scripts/run-review.mjs --dry-run   # writes prompts, spawns nothing
 `scripts/angles.json` is the source of truth. The same set is spelled out again
 in `agents/` (the definitions), in `skills/deep-review/SKILL.md` (the in-Claude
 orchestrator, which reads prose and cannot read JSON), in the README table (for
-humans), and in each client adapter under `clients/`.
+humans). Each client adapter under `clients/` restates the effort counts but
+delegates the angle set itself to the runner, so it is the counts that need
+watching there, not a list.
 
 `check-consistency.mjs` **discovers** the prose files rather than listing them,
 so a new adapter is covered the day it is added. Its inputs were hard-coded
