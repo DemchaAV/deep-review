@@ -285,6 +285,10 @@ fails until they agree, which is the point. Write any effort count as
 
 ---
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) — including what has and has not been verified.
+
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
