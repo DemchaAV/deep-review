@@ -23,6 +23,33 @@ const angles = JSON.parse(fs.readFileSync(path.join(HERE, "angles.json"), "utf8"
 const skill = fs.readFileSync(path.join(ROOT, "skills", "deep-review", "SKILL.md"), "utf8");
 const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
 
+// Every prose file that restates the angle set, not just the two the gate
+// started with. The client adapters under clients/ were added later and each
+// brought its own copy of the effort counts; because the gate's inputs were
+// hard-coded, it passed. Discovering them removes that whole class.
+function proseFiles() {
+  const found = [
+    { rel: "skills/deep-review/SKILL.md", text: skill },
+    { rel: "README.md", text: readme },
+    { rel: "AGENTS.md", text: fs.readFileSync(path.join(ROOT, "AGENTS.md"), "utf8") },
+  ];
+  const clientsDir = path.join(ROOT, "clients");
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith(".md")) {
+        found.push({
+          rel: path.relative(ROOT, full).split(path.sep).join("/"),
+          text: fs.readFileSync(full, "utf8"),
+        });
+      }
+    }
+  };
+  if (fs.existsSync(clientsDir)) walk(clientsDir);
+  return found;
+}
+
 const declaredAgents = new Set([...angles.angles.map((a) => a.agent), angles.verifier]);
 
 // 1. Every declared agent has a definition file whose frontmatter name matches.
@@ -82,7 +109,45 @@ for (const [narrow, wide] of [["quick", "standard"], ["standard", "deep"]]) {
   if (missing.length) fail(`effort "${narrow}" includes ${missing.join(", ")} but "${wide}" does not, breaking the documented subset relationship`);
 }
 
-// 7. Antigravity caps a workflow file at 12,000 characters. A file over that is
+// 7. Effort counts written in prose must match the presets. Every such claim
+//    uses the form `quick` (4 angles), which is the one shape this can check;
+//    counts written any other way are simply not gated, and that is stated in
+//    the README so nobody assumes protection they do not have.
+const EFFORT_CLAIM = /`(quick|standard|deep)`\s*\((\d+)\s*angles?/g;
+let effortClaims = 0;
+for (const { rel, text } of proseFiles()) {
+  for (const [, effort, claimed] of text.matchAll(EFFORT_CLAIM)) {
+    effortClaims += 1;
+    const actual = angles.angles.filter((a) => a.efforts.includes(effort)).length;
+    if (Number(claimed) !== actual) {
+      fail(`${rel} says \`${effort}\` runs ${claimed} angles; angles.json says ${actual}`);
+    }
+  }
+}
+
+// 8. Every category an agent declares must be one collect-findings ranks.
+//    An unknown category is not rejected there - it falls through to the
+//    quality family, is batched at low scrutiny and sorts last, so a
+//    correctness defect would be silently demoted by a typo.
+const collector = fs.readFileSync(path.join(HERE, "collect-findings.mjs"), "utf8");
+const rankBlock = /const CATEGORY_RANK = new Map\(\[([\s\S]*?)\]\);/.exec(collector);
+if (!rankBlock) {
+  fail("could not find CATEGORY_RANK in collect-findings.mjs, so categories cannot be checked");
+} else {
+  const known = new Set([...rankBlock[1].matchAll(/\["([a-z-]+)",/g)].map((m) => m[1]));
+  for (const agent of declaredAgents) {
+    const file = path.join(ROOT, "agents", `${agent}.md`);
+    if (!fs.existsSync(file)) continue;
+    const text = fs.readFileSync(file, "utf8");
+    for (const [, category] of text.matchAll(/"category":\s*"([a-z-]+)"/g)) {
+      if (!known.has(category)) {
+        fail(`agents/${agent}.md declares category "${category}", which CATEGORY_RANK does not rank`);
+      }
+    }
+  }
+}
+
+// 9. Antigravity caps a workflow file at 12,000 characters. A file over that is
 //    silently truncated, which would cut the protocol off mid-step.
 const antigravityWorkflow = path.join(ROOT, "clients", "antigravity", "workflows", "deep-review.md");
 if (fs.existsSync(antigravityWorkflow)) {

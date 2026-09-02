@@ -292,6 +292,69 @@ test("finalize keeps the verifier's corrected line over the finder's", () => {
   assert.equal(finding.file, "src/moved.mjs");
 });
 
+test("an explicit null line leaves a candidate unanchored, not anchored at zero", () => {
+  const dir = makeRun({
+    "removed-behavior": [
+      { file: "src/a.mjs", line: null, category: "removed-behavior", summary: "the guard is gone entirely", failure_scenario: "a", confidence: "high" },
+    ],
+  });
+  run("collect-findings.mjs", ["collect", dir]);
+  assert.equal(clusters(dir).clusters[0].line, null, "line 0 is not a line");
+});
+
+test("a verdict with corrected_line null keeps the cluster's own line", () => {
+  const dir = makeRun({
+    "line-by-line": [
+      { file: "src/a.mjs", line: 42, category: "correctness", summary: "alpha defect here", failure_scenario: "a", confidence: "high" },
+    ],
+  });
+  run("collect-findings.mjs", ["collect", dir]);
+  const id = clusters(dir).clusters[0].id;
+  fs.writeFileSync(
+    path.join(dir, "verdicts", "b1.json"),
+    JSON.stringify({ verdicts: [{ cluster_id: id, verdict: "CONFIRMED", reason: "r", corrected_line: null }] }),
+    "utf8"
+  );
+  run("collect-findings.mjs", ["finalize", dir]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "report.json"), "utf8")).findings[0].line, 42);
+});
+
+test("merging an anchored member does not downgrade a cluster's confidence", () => {
+  const dir = makeRun({
+    "removed-behavior": [
+      { file: "src/a.mjs", line: null, category: "removed-behavior", summary: "validatorFor drops the errors array entirely", failure_scenario: "a", confidence: "high" },
+    ],
+    "cross-file": [
+      { file: "src/a.mjs", line: 12, category: "cross-file-break", summary: "callers of validatorFor still read the errors array", failure_scenario: "b", confidence: "low" },
+    ],
+  });
+  run("collect-findings.mjs", ["collect", dir]);
+  const [cluster] = clusters(dir).clusters;
+  assert.equal(cluster.corroboration, 2, "these describe one defect");
+  assert.equal(cluster.line, 12, "the cluster adopts the only line offered");
+  assert.equal(cluster.confidence, "high", "but keeps its own confidence");
+});
+
+test("collect refuses a non-numeric --max-batches", () => {
+  const dir = makeRun({
+    "line-by-line": [
+      { file: "src/a.mjs", line: 1, category: "correctness", summary: "alpha defect here", failure_scenario: "a", confidence: "high" },
+    ],
+  });
+  const res = run("collect-findings.mjs", ["collect", dir, "--max-batches", "many"]);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /--max-batches must be a positive number/);
+});
+
+test("finalize names the file when clusters.json is malformed", () => {
+  const dir = makeRun({});
+  fs.writeFileSync(path.join(dir, "clusters.json"), "null", "utf8");
+  const res = run("collect-findings.mjs", ["finalize", dir]);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /malformed/);
+  assert.ok(!/Cannot destructure/.test(res.stderr), "a TypeError is not an error message");
+});
+
 test("finalize refuses an unknown verdict rather than silently ranking it", () => {
   const dir = makeRun({
     "line-by-line": [
@@ -328,12 +391,65 @@ test("collect-findings rejects an unknown command", () => {
 
 test("a dry run needs no agent CLI, because it spawns nothing", () => {
   const repo = makeRepo();
-  const res = run("run-review.mjs", ["working", "--effort", "quick", "--dry-run"], repo);
+  // Naming an agent that is certainly absent is what makes this test about the
+  // no-agent branch on a developer machine, where a CLI is usually installed.
+  // Dropping this argument once already turned the test into a no-op that kept
+  // its name; CI, where no agent CLI exists at all, is the other half of it.
+  const res = run("run-review.mjs", ["working", "--effort", "quick", "--dry-run", "--agent", "gemini"], repo);
   assert.equal(res.status, 0, res.stderr);
   assert.match(res.stdout, /nothing spawned/);
-  // The prompts are the deliverable of a dry run, so check they were written.
   const runDir = /run dir (.+)/.exec(res.stdout)[1].trim();
   assert.ok(fs.existsSync(path.join(runDir, "prompts", "line-by-line.md")));
+});
+
+test("a rename is reported as one path git can actually open", () => {
+  const repo = makeRepo();
+  const git = (...args) => spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+  // Long enough for git's rename detection to fire.
+  fs.writeFileSync(
+    path.join(repo, "original.mjs"),
+    Array.from({ length: 40 }, (_, i) => `export const value${i} = ${i};`).join("\n"),
+    "utf8"
+  );
+  git("add", "-A");
+  git("commit", "-m", "add a file worth renaming");
+  git("mv", "original.mjs", "renamed.mjs");
+  fs.appendFileSync(path.join(repo, "renamed.mjs"), "\nexport const extra = true;\n", "utf8");
+  git("add", "-A");
+  git("commit", "-m", "rename it");
+
+  const res = run("prepare-review.mjs", ["HEAD~1..HEAD", "--json"], repo);
+  assert.equal(res.status, 0, res.stderr);
+  const context = JSON.parse(res.stdout);
+  for (const file of context.files) {
+    assert.ok(!file.path.includes("=>"), `"${file.path}" is a rename pseudo-path, not a file`);
+    assert.ok(!file.path.includes("{"), `"${file.path}" is a rename pseudo-path, not a file`);
+  }
+  const renamed = context.files.find((f) => f.path === "renamed.mjs");
+  assert.ok(renamed, "the new name must be the path");
+  assert.equal(renamed.renamedFrom, "original.mjs");
+});
+
+test("a root-level generated directory is excluded from the code diff", () => {
+  const repo = makeRepo();
+  fs.mkdirSync(path.join(repo, "dist"));
+  fs.writeFileSync(path.join(repo, "dist", "bundle.mjs"), "export const generated = 1;\n", "utf8");
+  fs.mkdirSync(path.join(repo, "src", "dist"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "src", "dist", "nested.mjs"), "export const nested = 1;\n", "utf8");
+
+  const res = run("prepare-review.mjs", ["working", "--json"], repo);
+  const context = JSON.parse(res.stdout);
+  const codeDiff = fs.readFileSync(context.paths.codeDiff, "utf8");
+  assert.ok(!codeDiff.includes("dist/bundle.mjs"), "a root-level dist/ must be noise too");
+  assert.ok(!codeDiff.includes("src/dist/nested.mjs"));
+  assert.ok(codeDiff.includes("pending.mjs"), "real source must survive the exclusions");
+});
+
+test("a mistyped size limit is refused rather than silently disabling the guard", () => {
+  const repo = makeRepo();
+  const res = run("prepare-review.mjs", ["working", "--max-diff-mb", "8mb"], repo);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /--max-diff-mb must be a positive number/);
 });
 
 test("an untracked file is reviewed, since git diff would not show it", () => {
@@ -399,6 +515,78 @@ test("installing over somebody else's pre-push hook is refused without --force",
   assert.match(fs.readFileSync(hook, "utf8"), /deep-review pre-push hook/);
 });
 
+// The hook is a shell script, so these need a POSIX shell. Git ships one on
+// Windows, but skip rather than fail if it is genuinely absent.
+const HAVE_SH = spawnSync("sh", ["-c", "exit 0"], { encoding: "utf8" }).status === 0;
+
+function pushToBareRemote(repo) {
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), "deep-review-bare-"));
+  spawnSync("git", ["init", "-q", "--bare", bare], { encoding: "utf8" });
+  spawnSync("git", ["remote", "add", "origin", bare], { cwd: repo, encoding: "utf8" });
+  const res = spawnSync("git", ["push", "origin", "main"], { cwd: repo, encoding: "utf8" });
+  return `${res.stdout || ""}${res.stderr || ""}`;
+}
+
+function recordRun(repo, { finished }) {
+  const headSha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
+  const runDir = path.join(repo, ".deep-review", "test-run");
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, "context.json"), JSON.stringify({ headSha }, null, 2), "utf8");
+  // prepare-review writes context.json before the first angle runs; only
+  // finalize writes report.json. That difference is the whole point.
+  if (finished) fs.writeFileSync(path.join(runDir, "report.json"), JSON.stringify({ findings: [] }), "utf8");
+}
+
+test("the hook warns when nothing has reviewed the commits being pushed", { skip: !HAVE_SH }, () => {
+  const repo = makeRepo();
+  run("install-client.mjs", ["githook", "--workspace", repo]);
+  spawnSync("git", ["add", "-A"], { cwd: repo });
+  spawnSync("git", ["commit", "-m", "work to push"], { cwd: repo });
+  assert.match(pushToBareRemote(repo), /no completed review covers/);
+});
+
+test("the hook is not satisfied by a review that never finished", { skip: !HAVE_SH }, () => {
+  const repo = makeRepo();
+  run("install-client.mjs", ["githook", "--workspace", repo]);
+  spawnSync("git", ["add", "-A"], { cwd: repo });
+  spawnSync("git", ["commit", "-m", "work to push"], { cwd: repo });
+  // A --dry-run, or a run that died on its first angle, leaves exactly this.
+  recordRun(repo, { finished: false });
+  assert.match(
+    pushToBareRemote(repo),
+    /no completed review covers/,
+    "context.json alone is not evidence that any angle ran"
+  );
+});
+
+test("the hook stays silent once a review has finished for that head", { skip: !HAVE_SH }, () => {
+  const repo = makeRepo();
+  run("install-client.mjs", ["githook", "--workspace", repo]);
+  spawnSync("git", ["add", "-A"], { cwd: repo });
+  spawnSync("git", ["commit", "-m", "work to push"], { cwd: repo });
+  recordRun(repo, { finished: true });
+  assert.doesNotMatch(pushToBareRemote(repo), /no completed review covers/);
+});
+
+test("the installed hook carries an absolute command, not one that only works here", () => {
+  const repo = makeRepo();
+  run("install-client.mjs", ["githook", "--workspace", repo]);
+  const hook = fs.readFileSync(path.join(repo, ".git", "hooks", "pre-push"), "utf8");
+  assert.ok(!hook.includes("{{DEEP_REVIEW_ROOT}}"), "the placeholder must be substituted");
+  // Only what the hook actually prints matters; the comments may still discuss
+  // the command that was wrong, and explaining why is worth keeping.
+  const printed = hook.split("\n").filter((line) => line.trim().startsWith("printf")).join("\n");
+  assert.match(printed, /run-review\.mjs/, "the remedy must name a command that exists");
+  assert.doesNotMatch(printed, /npm run review/, "npm run review only works inside deep-review itself");
+});
+
+test("--global is refused for a per-repository target instead of doing nothing", () => {
+  const repo = makeRepo();
+  const res = run("install-client.mjs", ["githook", "--global"], repo);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /no global location/);
+});
+
 test("the hook installer refuses a directory that is not a git repository", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deep-review-plain-"));
   const res = run("install-client.mjs", ["githook", "--workspace", dir]);
@@ -411,6 +599,49 @@ test("the hook installer refuses a directory that is not a git repository", () =
 test("the angle list agrees across angles.json, agents/, SKILL.md and README", () => {
   const res = run("check-consistency.mjs", []);
   assert.equal(res.status, 0, res.stderr);
+});
+
+// A gate nobody has watched fail is a gate nobody knows works. These prove it
+// catches the two drifts it was written for, by breaking a copy of the repo.
+function copyRepoForGate() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deep-review-gate-"));
+  for (const entry of ["scripts", "agents", "skills", "clients", "README.md", "AGENTS.md"]) {
+    fs.cpSync(path.join(ROOT, entry), path.join(dir, entry), { recursive: true });
+  }
+  return dir;
+}
+
+function runGateIn(dir) {
+  const res = spawnSync(process.execPath, [path.join(dir, "scripts", "check-consistency.mjs")], { encoding: "utf8" });
+  return { status: res.status, stderr: res.stderr || "" };
+}
+
+test("the gate catches an effort count that prose and angles.json disagree on", () => {
+  const dir = copyRepoForGate();
+  assert.equal(runGateIn(dir).status, 0, "the copy must start clean");
+
+  const readme = path.join(dir, "README.md");
+  fs.writeFileSync(
+    readme,
+    fs.readFileSync(readme, "utf8").replace("`quick` (4 angles)", "`quick` (5 angles)"),
+    "utf8"
+  );
+  const broken = runGateIn(dir);
+  assert.equal(broken.status, 1);
+  assert.match(broken.stderr, /says `quick` runs 5 angles/);
+});
+
+test("the gate catches an agent declaring a category the collector cannot rank", () => {
+  const dir = copyRepoForGate();
+  const agent = path.join(dir, "agents", "dr-line-by-line.md");
+  fs.writeFileSync(
+    agent,
+    fs.readFileSync(agent, "utf8").replace('"category": "correctness"', '"category": "telepathy"'),
+    "utf8"
+  );
+  const broken = runGateIn(dir);
+  assert.equal(broken.status, 1);
+  assert.match(broken.stderr, /declares category "telepathy"/);
 });
 
 test("every agent definition names its findings-file contract", () => {

@@ -1,8 +1,8 @@
 #!/bin/sh
 # deep-review pre-push hook.
 #
-# The moment worth catching is after the code is written and before it becomes
-# a pull request: findings can still be folded into the branch quietly, whereas
+# The moment worth catching is after the code is written and before it becomes a
+# pull request: findings can still be folded into the branch quietly, whereas
 # once the PR is open every fix is a visible extra commit.
 #
 # This hook does NOT run a review. A review spawns a dozen or more model
@@ -23,34 +23,47 @@ runs_dir="$repo_root/.deep-review"
 zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
 unreviewed=""
 
+# A run is only evidence of a review if it finished. prepare-review writes
+# context.json before the first angle starts, so matching on that alone counted
+# a --dry-run, or a run that died on its first angle, as a completed review -
+# the hook answering "yes" about a review that never happened. report.json is
+# written by `collect-findings finalize`, at the very end, so it is the honest
+# marker.
+reviewed_head() {
+    [ -d "$runs_dir" ] || return 1
+    for context in "$runs_dir"/*/context.json; do
+        [ -f "$context" ] || continue
+        grep -qs "\"headSha\": \"$1\"" "$context" || continue
+        [ -f "$(dirname "$context")/report.json" ] && return 0
+    done
+    return 1
+}
+
 # stdin carries one line per ref: <local ref> <local sha> <remote ref> <remote sha>
 while read -r _local_ref local_sha _remote_ref _remote_sha; do
     # A deletion pushes the null sha and has nothing to review.
+    [ -z "${local_sha:-}" ] && continue
     [ "$local_sha" = "$zero" ] && continue
-    [ -z "$local_sha" ] && continue
 
-    reviewed=0
-    if [ -d "$runs_dir" ]; then
-        # A run records the head it reviewed. Matching on that is stricter than
-        # matching on a branch name: amending a commit invalidates the review,
-        # which is the correct behaviour.
-        if grep -ls "\"headSha\": \"$local_sha\"" "$runs_dir"/*/context.json >/dev/null 2>&1; then
-            reviewed=1
-        fi
+    if ! reviewed_head "$local_sha"; then
+        # Shortened one at a time: cutting the joined list named the first
+        # commit and silently dropped every other unreviewed ref.
+        unreviewed="$unreviewed $(printf '%.9s' "$local_sha")"
     fi
-
-    [ "$reviewed" = "0" ] && unreviewed="$unreviewed $local_sha"
 done
 
 [ -z "$unreviewed" ] && exit 0
 
-short=$(echo "$unreviewed" | cut -c1-9)
 printf '\n' >&2
-printf 'deep-review: no review recorded for%s\n' "$short" >&2
+printf 'deep-review: no completed review covers%s\n' "$unreviewed" >&2
 printf '\n' >&2
 printf '  Review before this becomes a pull request:\n' >&2
-printf '    /deep-review branch          (inside an agent session)\n' >&2
-printf '    npm run review -- branch     (from this repository)\n' >&2
+printf '    /deep-review branch\n' >&2
+printf '      in a Claude Code, Codex or Antigravity session, or from a terminal:\n' >&2
+# An absolute path into the deep-review checkout, substituted at install time.
+# "npm run review" only works inside deep-review's own repository, and this hook
+# runs in somebody else's.
+printf '    node {{DEEP_REVIEW_ROOT}}/scripts/run-review.mjs branch\n' >&2
 printf '\n' >&2
 
 if [ "${DEEP_REVIEW_REQUIRE:-0}" = "1" ]; then

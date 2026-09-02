@@ -1,7 +1,7 @@
 ---
 description: Multi-angle parallel code review - ten finder agents at once, an adversarial verify pass, one ranked report.
 argument-hint: "[target] [--effort quick|standard|deep] [--angles a,b,c]"
-allowed-tools: Bash, Read, Write, Grep, Glob, Agent, ReportFindings
+allowed-tools: Bash, Read, Write, Grep, Glob, Agent, Skill, ReportFindings
 ---
 
 Run a deep review. Arguments: `$ARGUMENTS`

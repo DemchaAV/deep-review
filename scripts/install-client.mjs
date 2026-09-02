@@ -47,6 +47,15 @@ const TARGETS = {
     workspace: (dir) => path.join(dir, ".git", "hooks", "pre-push"),
     source: path.join(ROOT, "clients", "githook", "pre-push"),
     executable: true,
+    // Both rules below used to live in main() - one as a comparison against
+    // this target's own workspace function, one as a literal string. A second
+    // per-repository target would have silently skipped both. They belong to
+    // the target that needs them.
+    requiresGitRepo: true,
+    marker: "deep-review pre-push hook",
+    // The file has no extension, so an extension allowlist would never have
+    // rendered it while the installer claimed it had.
+    render: true,
     verify: () => true,
     after: [
       "Warns on a push whose commits no review has covered. It never runs a",
@@ -114,18 +123,22 @@ function render(text) {
   return text.split("{{DEEP_REVIEW_ROOT}}").join(ROOT_FOR_COMMANDS);
 }
 
-function copyRendered(from, to, dryRun) {
+// Whether a file is rendered is a property of the target, not a guess from its
+// name: clients/githook/pre-push has no extension at all, and an extension
+// allowlist silently copied it verbatim while the installer reported that the
+// checkout path had been substituted.
+function copyRendered(from, to, dryRun, forceRender = false) {
   const written = [];
   const stat = fs.statSync(from);
   if (stat.isDirectory()) {
     for (const entry of fs.readdirSync(from)) {
-      written.push(...copyRendered(path.join(from, entry), path.join(to, entry), dryRun));
+      written.push(...copyRendered(path.join(from, entry), path.join(to, entry), dryRun, forceRender));
     }
     return written;
   }
   if (!dryRun) {
     fs.mkdirSync(path.dirname(to), { recursive: true });
-    const isText = /\.(md|yaml|yml|json|txt)$/i.test(from);
+    const isText = forceRender || /\.(md|yaml|yml|json|txt)$/i.test(from);
     fs.writeFileSync(to, isText ? render(fs.readFileSync(from, "utf8")) : fs.readFileSync(from));
   }
   written.push(to);
@@ -173,24 +186,30 @@ function main() {
     throw new Error(target.verifyHint || `${target.label} does not look installed`);
   }
 
-  // A hook has no global form, so it installs into the current repository when
-  // no workspace was named.
-  const workspace = opts.workspace || (target.global === null ? process.cwd() : null);
-  if (target.global === null && !workspace) {
-    throw new Error(`${target.label} is per-repository; pass --workspace <dir>`);
+  // --global used to be parsed and never read, so it silently did nothing.
+  // It now means what it says, and is refused where it cannot be honoured.
+  if (opts.global && target.global === null) {
+    throw new Error(`${target.label} is per-repository and has no global location`);
   }
+  if (opts.global && opts.workspace) {
+    throw new Error("--global and --workspace ask for opposite things; pass one");
+  }
+
+  // A target with no global form installs into the current repository when no
+  // workspace was named.
+  const workspace = opts.workspace || (target.global === null ? process.cwd() : null);
   const destination = workspace ? target.workspace(path.resolve(workspace)) : target.global();
 
-  if (workspace && target.workspace === TARGETS.githook.workspace && !fs.existsSync(path.join(path.resolve(workspace), ".git"))) {
+  if (target.requiresGitRepo && !fs.existsSync(path.join(path.resolve(workspace), ".git"))) {
     throw new Error(`not a git repository: ${path.resolve(workspace)}`);
   }
 
   const existed = fs.existsSync(destination);
-  // Overwriting somebody else's hook loses work silently. Ours is recognisable
-  // by its own marker; anything else needs an explicit --force.
-  if (existed && target.executable && !opts.force) {
+  // Overwriting somebody else's hook loses work that has no other copy. Ours is
+  // recognisable by its own marker; anything else needs an explicit --force.
+  if (existed && target.marker && !opts.force) {
     const current = fs.readFileSync(destination, "utf8");
-    if (!current.includes("deep-review pre-push hook")) {
+    if (!current.includes(target.marker)) {
       throw new Error(
         `${destination} already exists and was not written by deep-review. ` +
           `Merge it by hand, or pass --force to replace it.`
@@ -198,7 +217,7 @@ function main() {
     }
   }
 
-  const written = copyRendered(target.source, destination, opts.dryRun);
+  const written = copyRendered(target.source, destination, opts.dryRun, Boolean(target.render));
   if (target.executable && !opts.dryRun) {
     for (const file of written) fs.chmodSync(file, 0o755);
   }

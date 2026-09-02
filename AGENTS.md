@@ -33,13 +33,22 @@ node scripts/run-review.mjs --dry-run   # writes prompts, spawns nothing
 
 `--dry-run` is how you exercise the orchestrator without spending money. Use it.
 
-## The angle list lives in four places
+## The angle list is restated in several places, and the gate proves they agree
 
-`scripts/angles.json` is the source of truth. The same set is also spelled out
-in `agents/` (the definitions), `skills/deep-review/SKILL.md` (the in-Claude
-orchestrator, which reads prose and cannot read JSON), and the README table (for
-humans). `check-consistency.mjs` proves all four agree and fails CI when they do
-not — so **add an angle to all four in the same commit**, or the gate stops you.
+`scripts/angles.json` is the source of truth. The same set is spelled out again
+in `agents/` (the definitions), in `skills/deep-review/SKILL.md` (the in-Claude
+orchestrator, which reads prose and cannot read JSON), in the README table (for
+humans), and in each client adapter under `clients/`.
+
+`check-consistency.mjs` **discovers** the prose files rather than listing them,
+so a new adapter is covered the day it is added. Its inputs were hard-coded
+once, and the two client adapters slipped in with their own stale copies of the
+effort counts while the gate reported success. Do not reintroduce a fixed list.
+
+Two rules follow. **Add an angle everywhere in the same commit** — the gate
+stops you otherwise. And **write an effort count as `` `quick` (4 angles) ``**:
+that is the one shape the gate can check, and a count written any other way is
+not protected.
 
 ## Conventions
 

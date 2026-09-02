@@ -26,13 +26,57 @@ const UNIT_SEP = String.fromCharCode(31);
 
 // ---------------------------------------------------------------- git helpers
 
-function git(args, { cwd = process.cwd(), allowFail = false } = {}) {
+function git(args, { cwd = process.cwd(), allowFail = false, raw = false } = {}) {
   const res = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 512 * 1024 * 1024 });
   if (res.error) throw res.error;
   if (res.status !== 0 && !allowFail) {
     throw new Error(`git ${args.join(" ")} failed (${res.status}):\n${res.stderr}`);
   }
-  return { ok: res.status === 0, out: (res.stdout || "").trim(), err: (res.stderr || "").trim() };
+  // NUL-delimited output must not be trimmed: the delimiters are the structure.
+  const stdout = res.stdout || "";
+  return { ok: res.status === 0, out: raw ? stdout : stdout.trim(), err: (res.stderr || "").trim() };
+}
+
+// `git diff --numstat` prints a rename as a single field - "src/{a.mjs =>
+// b.mjs}" for a move within a directory, "src/a.mjs => b.mjs" across one - so
+// splitting on tabs yields a path that exists nowhere and that no angle can
+// open. With -z the path field is empty and the old and new names follow as
+// their own NUL-terminated fields, which is unambiguous.
+function parseNumstat(raw) {
+  const fields = raw.split("\0");
+  const files = [];
+  for (let i = 0; i < fields.length; i += 1) {
+    const field = fields[i];
+    if (!field) continue;
+    const firstTab = field.indexOf("\t");
+    const secondTab = field.indexOf("\t", firstTab + 1);
+    if (firstTab === -1 || secondTab === -1) continue;
+
+    const addedRaw = field.slice(0, firstTab);
+    const deletedRaw = field.slice(firstTab + 1, secondTab);
+    let filePath = field.slice(secondTab + 1);
+    let renamedFrom = null;
+    if (filePath === "") {
+      renamedFrom = fields[i + 1];
+      filePath = fields[i + 2];
+      i += 2;
+    }
+    if (!filePath) continue;
+
+    // git prints "-" for both counts on binary files; Number("-") is NaN,
+    // which would poison every downstream sum.
+    const added = addedRaw === "-" ? 0 : Number(addedRaw);
+    const deleted = deletedRaw === "-" ? 0 : Number(deletedRaw);
+    files.push({
+      path: filePath.replace(/\\/g, "/"),
+      added,
+      deleted,
+      changed: added + deleted,
+      binary: addedRaw === "-",
+      ...(renamedFrom ? { renamedFrom: renamedFrom.replace(/\\/g, "/") } : {}),
+    });
+  }
+  return files;
 }
 
 function gh(args, { cwd = process.cwd() } = {}) {
@@ -57,7 +101,13 @@ function parseArgs(argv) {
     };
     if (arg === "--target") opts.target = next();
     else if (arg === "--out") opts.out = next();
-    else if (arg === "--max-diff-mb") opts.maxDiffMb = Number(next());
+    else if (arg === "--max-diff-mb") {
+      // NaN would make every `megabytes > limit` comparison false, silently
+      // removing the guard rather than enforcing a different one.
+      const value = Number(next());
+      if (!Number.isFinite(value) || value <= 0) throw new Error("--max-diff-mb must be a positive number");
+      opts.maxDiffMb = value;
+    }
     else if (arg === "--json") opts.json = true;
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else if (!arg.startsWith("-") && opts.target === null) opts.target = arg;
@@ -158,27 +208,42 @@ function resolveTarget(rawTarget, cwd) {
 // almost no reviewable logic. code.diff is what the finder angles read first;
 // full.diff stays available for the angles that review prose (conventions,
 // removed-behavior, altitude).
-const NOISE_PATHSPECS = [
-  ":(exclude)*.md",
-  ":(exclude)*.mdx",
-  ":(exclude)*.lock",
-  ":(exclude)package-lock.json",
-  ":(exclude)pnpm-lock.yaml",
-  ":(exclude)yarn.lock",
-  ":(exclude)Cargo.lock",
-  ":(exclude)poetry.lock",
-  ":(exclude)composer.lock",
-  ":(exclude)Gemfile.lock",
-  ":(exclude)go.sum",
-  ":(exclude)*.snap",
-  ":(exclude)*.min.js",
-  ":(exclude)*.map",
-  ":(exclude)**/dist/**",
-  ":(exclude)**/build/**",
-  ":(exclude)**/vendor/**",
-  ":(exclude)**/node_modules/**",
-  ":(exclude)**/__snapshots__/**",
+//
+// One definition, two consumers: git pathspecs for tracked files and a
+// predicate for the untracked ones git will not diff. Keeping them as two
+// hand-written lists diverged within a day - *.min.js was in the pathspecs and
+// missing from the predicate - so the same file was noise or not depending on
+// whether git had been told about it.
+const NOISE_SUFFIXES = ["md", "mdx", "lock", "snap", "map", "min.js"];
+const NOISE_FILENAMES = [
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "Cargo.lock",
+  "poetry.lock",
+  "composer.lock",
+  "Gemfile.lock",
+  "go.sum",
 ];
+const NOISE_DIRECTORIES = ["dist", "build", "vendor", "node_modules", "__snapshots__"];
+
+// `**/dir/**` matches a nested dist/ but NOT one at the repository root, so the
+// root-anchored form has to be listed alongside it - verified against git
+// rather than assumed. Without it the biggest generated directory in a typical
+// project is the one that survives into the diff.
+const NOISE_PATHSPECS = [
+  ...NOISE_SUFFIXES.map((suffix) => `:(exclude)*.${suffix}`),
+  ...NOISE_FILENAMES.flatMap((name) => [`:(exclude)${name}`, `:(exclude)**/${name}`]),
+  ...NOISE_DIRECTORIES.flatMap((dir) => [`:(exclude)${dir}/**`, `:(exclude)**/${dir}/**`]),
+];
+
+function isNoise(relPath) {
+  const posix = relPath.replace(/\\/g, "/");
+  const base = posix.slice(posix.lastIndexOf("/") + 1);
+  if (NOISE_SUFFIXES.some((suffix) => base.toLowerCase().endsWith(`.${suffix}`))) return true;
+  if (NOISE_FILENAMES.includes(base)) return true;
+  return posix.split("/").slice(0, -1).some((segment) => NOISE_DIRECTORIES.includes(segment));
+}
 
 // -U12 rather than the default -U3: every angle is told to reason about the
 // enclosing function, and wide context means fewer follow-up file reads.
@@ -216,12 +281,6 @@ function untrackedDiff(root, relPath) {
     .replace(/^\+\+\+ b\/.*$/m, `+++ b/${posix}`);
 }
 
-function isNoise(relPath) {
-  const posix = relPath.replace(/\\/g, "/");
-  if (/\.(md|mdx|lock|snap|map)$/i.test(posix)) return true;
-  if (/(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|poetry\.lock|composer\.lock|Gemfile\.lock|go\.sum)$/.test(posix)) return true;
-  return /(^|\/)(dist|build|vendor|node_modules|__snapshots__)\//.test(posix);
-}
 
 const LANGUAGE_BY_EXT = new Map(Object.entries({
   ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
@@ -305,19 +364,10 @@ function main() {
     : [];
 
   const numstat = git(
-    ["diff", "--numstat", "-M", target.includeWorkingTree ? mergeBase : `${mergeBase}..${headSha}`],
-    { cwd: root }
+    ["diff", "--numstat", "-M", "-z", target.includeWorkingTree ? mergeBase : `${mergeBase}..${headSha}`],
+    { cwd: root, raw: true }
   ).out;
-  const files = numstat
-    ? numstat.split("\n").map((line) => {
-        const [added, deleted, filePath] = line.split("\t");
-        // git prints "-" for both counts on binary files; Number("-") is NaN,
-        // which would poison every downstream sum.
-        const add = added === "-" ? 0 : Number(added);
-        const del = deleted === "-" ? 0 : Number(deleted);
-        return { path: filePath, added: add, deleted: del, changed: add + del, binary: added === "-" };
-      })
-    : [];
+  const files = parseNumstat(numstat);
 
   const untracked = [];
   if (target.includeWorkingTree) {

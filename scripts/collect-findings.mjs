@@ -76,6 +76,16 @@ function readJsonDir(dir) {
     .filter((entry) => entry.data !== null);
 }
 
+// Number(null) is 0 and Number.isFinite(0) is true, so an explicit
+// "line": null used to anchor a finding at line 0 - which then rendered as
+// "file:0" and killed the null-anchor merge path meant for angles that report
+// an absence. One helper, used everywhere a line arrives from an agent.
+function asLine(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const line = Number(value);
+  return Number.isFinite(line) && line > 0 ? line : null;
+}
+
 function normalizePath(filePath) {
   return String(filePath || "")
     .replace(/\\/g, "/")
@@ -135,12 +145,14 @@ function loadCandidates(runDir) {
         process.stderr.write(`collect-findings: ${angle} candidate ${index} has no file/summary; dropped\n`);
         continue;
       }
-      const category = String(raw.category || "correctness").toLowerCase();
+      // Trimmed: a category arriving with stray whitespace matched no entry
+      // in the rank map and silently left the correctness family.
+      const category = String(raw.category || "correctness").trim().toLowerCase();
       candidates.push({
         id: `${angle}-${index + 1}`,
         angle,
         file: normalizePath(raw.file),
-        line: Number.isFinite(Number(raw.line)) ? Number(raw.line) : null,
+        line: asLine(raw.line),
         category,
         family: family(category),
         summary: String(raw.summary).trim(),
@@ -177,15 +189,15 @@ function clusterCandidates(candidates) {
     if (match) {
       match.members.push(candidate);
       // Keep the most confident member's line as the cluster anchor.
-      if (
-        candidate.line !== null &&
-        (match.line === null ||
-          CONFIDENCE_RANK.get(candidate.confidence) < CONFIDENCE_RANK.get(match.confidence))
-      ) {
-        match.line = candidate.line;
+      // An unanchored cluster adopts the first line a member supplies, but
+      // never inherits that member's confidence: doing both let a low-confidence
+      // member demote a high-confidence cluster purely by arriving with a line.
+      if (match.line === null && candidate.line !== null) match.line = candidate.line;
+      if (CONFIDENCE_RANK.get(candidate.confidence) < CONFIDENCE_RANK.get(match.confidence)) {
         match.confidence = candidate.confidence;
+        if (candidate.line !== null) match.line = candidate.line;
       }
-      if (CATEGORY_RANK.get(candidate.category) < CATEGORY_RANK.get(match.category)) {
+      if ((CATEGORY_RANK.get(candidate.category) ?? 99) < (CATEGORY_RANK.get(match.category) ?? 99)) {
         match.category = candidate.category;
       }
       continue;
@@ -312,7 +324,11 @@ function collect(runDir, opts) {
 function finalize(runDir, opts) {
   const clustersFile = path.join(runDir, "clusters.json");
   if (!fs.existsSync(clustersFile)) throw new Error(`no clusters.json in ${runDir}; run "collect" first`);
-  const { clusters } = readJson(clustersFile);
+  const parsed = readJson(clustersFile);
+  if (!parsed || !Array.isArray(parsed.clusters)) {
+    throw new Error(`${clustersFile} is missing or malformed; run "collect" again`);
+  }
+  const { clusters } = parsed;
 
   const verdicts = new Map();
   for (const { name, data } of readJsonDir(path.join(runDir, "verdicts"))) {
@@ -340,7 +356,7 @@ function finalize(runDir, opts) {
     findings.push({
       cluster_id: cluster.id,
       file: verdict.corrected_file || cluster.file,
-      line: Number.isFinite(Number(verdict.corrected_line)) ? Number(verdict.corrected_line) : cluster.line,
+      line: asLine(verdict.corrected_line) ?? cluster.line,
       category: verdict.category || cluster.category,
       verdict: verdict.verdict,
       summary: verdict.summary || cluster.summary,
@@ -438,7 +454,9 @@ function main() {
     else if (rest[i] === "--max-batches") {
       const value = rest[i + 1];
       if (value === undefined || value.startsWith("--")) throw new Error("--max-batches requires a value");
-      opts.maxBatches = Number(value);
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 1) throw new Error("--max-batches must be a positive number");
+      opts.maxBatches = parsed;
       i += 1;
     } else throw new Error(`unknown argument: ${rest[i]}`);
   }

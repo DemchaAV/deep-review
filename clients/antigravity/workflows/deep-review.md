@@ -30,7 +30,7 @@ Pick `<target>` from what the user asked for:
 
 Options worth passing on:
 
-- `--effort quick` (4 angles) · `standard` (7, default) · `deep` (all 10)
+- `--effort`: `quick` (4 angles), `standard` (7 angles, default), `deep` (10 angles)
 - `--angles line-by-line,cross-file` — an explicit list instead of a preset
 - `--concurrency 5` — how many agent processes run at once. Lower it if you hit
   rate limits: a rate-limited agent fails as "no findings", which is

@@ -147,8 +147,8 @@ layer without narrowing what they are allowed to find.
 | simplification | complexity the diff adds |
 | efficiency | work the diff wastes |
 
-`quick` runs the first four, `standard` (the default) the first seven, `deep`
-all ten. An angle with nothing to look at is dropped rather than run — the
+`quick` (4 angles), `standard` (7 angles, the default) and `deep` (10 angles)
+select how many run. An angle with nothing to look at is dropped rather than run — the
 conventions angle does not run in a repo with no governing docs, because an
 angle with no ground returns noise, not silence.
 
@@ -231,10 +231,13 @@ Some consequences worth knowing:
 - Prompts are passed as file paths relative to the working directory, never as
   long command-line strings. `cmd.exe` cannot be reliably quoted against
   embedded quotes, and the fix is to not need quoting.
-- The angle list exists in four places for four different readers, and
-  `check-consistency.mjs` fails CI if they disagree — a review that silently
-  runs nine angles while claiming ten is precisely the defect class this tool
-  exists to catch.
+- The angle list is restated for several different readers — the runner reads
+  JSON, the in-Claude orchestrator reads prose, humans read a table, and each
+  client adapter repeats it again. `check-consistency.mjs` discovers those files
+  rather than listing them, and fails CI if any disagrees. A review that
+  silently runs nine angles while claiming ten is precisely the defect class
+  this tool exists to catch, and the gate's own inputs were hard-coded until a
+  run of this tool on itself pointed that out.
 
 ---
 
@@ -277,7 +280,8 @@ Add a `dr-<name>.md` to `agents/` following the shape of the others — a mandat
 a concrete hunting list, and the findings-file JSON contract — then register it
 in `scripts/angles.json`, add a row to the table in
 `skills/deep-review/SKILL.md`, and add a row to the table above. `npm run check`
-fails until all four agree, which is the point.
+fails until they agree, which is the point. Write any effort count as
+`` `quick` (4 angles) `` — that exact shape is what the gate can verify.
 
 ---
 

@@ -54,9 +54,9 @@ Ten angles exist. Which run depends on effort, which the user may set with
 
 | Effort | Angles | Agents |
 |---|---|---|
-| `quick` | line-by-line, removed-behavior, cross-file, platform | 4 |
-| `standard` (default) | the four above, plus wrapper, conventions, altitude | 7 |
-| `deep` | all ten | 10 |
+| `quick` (4 angles) | line-by-line, removed-behavior, cross-file, platform | 4 |
+| `standard` (7 angles, default) | the four above, plus wrapper, conventions, altitude | 7 |
+| `deep` (10 angles) | all ten | 10 |
 
 | Angle | Agent | Owns |
 |---|---|---|
@@ -73,10 +73,15 @@ Ten angles exist. Which run depends on effort, which the user may set with
 
 `--angles a,b,c` overrides the preset with an explicit list.
 
-**Drop an angle the diff cannot support** and say so in your final summary:
-`wrapper` when the diff introduces no indirection layer, `conventions` when
-`prepare-review` found no governing docs, `platform` when the diff is pure
-configuration. An angle with nothing to look at returns noise, not silence.
+**Drop an angle the diff cannot support** and say so in your final summary. Two
+rules are mechanical, and `scripts/run-review.mjs` applies exactly the same two,
+so both paths select the same angles for the same diff:
+
+- `conventions` when `prepare-review` found no governing docs at all.
+- `platform` when the diff has no programming language - a configuration-only
+  change, where the pitfall sheet would be the generic fallback.
+
+An angle with nothing to look at returns noise, not silence.
 
 ---
 

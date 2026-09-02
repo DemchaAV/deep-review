@@ -40,7 +40,7 @@ Run it **from the repository being reviewed**, not from the checkout above.
 
 Useful options:
 
-- `--effort quick` (4 angles) · `standard` (7, the default) · `deep` (all 10)
+- `--effort`: `quick` (4 angles), `standard` (7 angles, the default), `deep` (10 angles)
 - `--angles line-by-line,cross-file` — an explicit list instead of a preset
 - `--concurrency 5` — how many `codex exec` processes run at once. Lower it if
   you hit rate limits; a rate-limited agent fails as "no findings", which looks

@@ -278,13 +278,21 @@ function runOne({ label, promptRel, agent, model, cwd, logFile }) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const chunks = [];
+    // Node emits 'close' after 'error' for a spawn that never started, and the
+    // close handler would then overwrite the diagnostic with the empty output of
+    // a process that never ran - destroying the only record of why it failed.
+    let settled = false;
     child.stdout.on("data", (d) => chunks.push(d));
     child.stderr.on("data", (d) => chunks.push(d));
     child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
       fs.writeFileSync(logFile, `spawn failed: ${error.message}\n`, "utf8");
       resolve({ label, ok: false, code: null, seconds: 0, error: error.message });
     });
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
       fs.writeFileSync(logFile, Buffer.concat(chunks).toString("utf8"), "utf8");
       resolve({ label, ok: code === 0, code, seconds: Math.round((Date.now() - started) / 1000) });
     });
@@ -313,10 +321,16 @@ async function runPool(tasks, concurrency, onDone) {
 
 // ---------------------------------------------------------------------- main
 
+// collect-findings reports a skipped malformed file, a dropped candidate and an
+// unknown verdict on stderr while still exiting zero. Returning stdout alone
+// swallowed all three, so a run over incomplete data looked clean.
 function node(script, args) {
   const res = spawnSync(process.execPath, [path.join(HERE, script), ...args], { encoding: "utf8" });
   if (res.error) throw res.error;
   if (res.status !== 0) throw new Error(`${script} failed:\n${res.stderr || res.stdout}`);
+  if (res.stderr && res.stderr.trim()) {
+    process.stdout.write(`${res.stderr.trim().replace(/^/gm, "      WARNING: ")}\n`);
+  }
   return res.stdout;
 }
 
@@ -349,19 +363,33 @@ async function main() {
       `      run dir ${runDir}\n`
   );
 
+  // Name the misspelling before complaining that nothing was selected: the
+  // empty selection is the symptom, the unknown name is the cause, and
+  // reporting the symptom sends the reader looking for the wrong problem.
+  const missing = opts.angles ? opts.angles.filter((id) => !ANGLES.angles.some((a) => a.id === id)) : [];
+  if (missing.length) {
+    throw new Error(
+      `unknown angle(s): ${missing.join(", ")}. Known angles: ${ANGLES.angles.map((a) => a.id).join(", ")}`
+    );
+  }
+
   const selected = opts.angles
     ? ANGLES.angles.filter((a) => opts.angles.includes(a.id))
     : ANGLES.angles.filter((a) => a.efforts.includes(opts.effort));
   if (selected.length === 0) throw new Error("no angles selected");
-
-  const missing = opts.angles ? opts.angles.filter((id) => !ANGLES.angles.some((a) => a.id === id)) : [];
-  if (missing.length) throw new Error(`unknown angle(s): ${missing.join(", ")}`);
 
   // An angle with nothing to look at returns noise, not silence.
   const dropped = [];
   const finders = selected.filter((angle) => {
     if (angle.needsGoverningDocs && context.governingDocs.repo.length === 0 && !context.governingDocs.user) {
       dropped.push(`${angle.id} (no governing docs in this repo)`);
+      return false;
+    }
+    // A configuration-only diff has no language, so the pitfall sheet would be
+    // the generic fallback and the angle would spend a whole model session
+    // asking about the classic traps of nothing in particular.
+    if (angle.needsPitfalls && !context.primaryLanguage) {
+      dropped.push(`${angle.id} (no programming language in this diff)`);
       return false;
     }
     return true;
