@@ -1,0 +1,19 @@
+{
+  "$schema": "https://code.claude.com/schemas/plugin.json",
+  "name": "deep-review",
+  "displayName": "Deep Review",
+  "version": "0.1.0",
+  "description": "Multi-angle parallel code review. Ten specialised finder agents scan the same diff from ten independent angles at once, an adversarial verify pass kills the false positives, and the surviving findings come back as one ranked report.",
+  "author": {
+    "name": "DemchaAV",
+    "url": "https://github.com/DemchaAV"
+  },
+  "license": "MIT",
+  "keywords": [
+    "code-review",
+    "multi-agent",
+    "parallel",
+    "static-analysis",
+    "pull-request"
+  ]
+}

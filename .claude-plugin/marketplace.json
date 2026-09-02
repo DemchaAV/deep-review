@@ -1,0 +1,19 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "deep-review",
+  "description": "Multi-angle parallel code review for Claude Code.",
+  "owner": {
+    "name": "DemchaAV",
+    "url": "https://github.com/DemchaAV"
+  },
+  "plugins": [
+    {
+      "name": "deep-review",
+      "source": "./",
+      "displayName": "Deep Review",
+      "description": "Ten finder angles in parallel, an adversarial verify pass, one ranked report.",
+      "category": "code-review",
+      "keywords": ["code-review", "multi-agent", "parallel"]
+    }
+  ]
+}
