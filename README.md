@@ -39,7 +39,8 @@ is told the capability exists.
 | **Claude Code** | native — ten `Agent` calls in one message | `/deep-review` | plugin marketplace |
 | **Codex CLI** | `run-review.mjs` spawns `codex exec` per angle | `$deep-review` | `install-client.mjs codex` |
 | **Google Antigravity** | `run-review.mjs` spawns `gemini` per angle | `/deep-review` | `install-client.mjs antigravity` |
-| **Anything else / CI** | same script, `--agent <cli>` | `npm run review` | clone and run |
+| **Anything else / CI** | same script, `--agent <cli>` | `npm run review` |
+| **git pre-push hook** | — asks, never runs | automatic on `git push` | clone and run |
 
 Claude Code gets the richest experience because it has a real parallel-subagent
 primitive. Everywhere else, `scripts/run-review.mjs` *is* the fan-out: it writes
@@ -77,6 +78,31 @@ node deep-review/scripts/install-client.mjs antigravity --workspace . # one proj
 Installs a workflow — globally under `~/.gemini/antigravity/global_workflows/`,
 or into a project's `.agents/workflows/`. Invoke it in Agent with
 `/deep-review`.
+
+### Before you push
+
+The moment worth catching is after the code is written and before it becomes a
+pull request: findings can still be folded into the branch quietly, whereas once
+the PR is open every fix is a visible extra commit.
+
+```bash
+node deep-review/scripts/install-client.mjs githook --workspace .
+```
+
+Installs a `pre-push` hook that checks whether any review has covered the
+commits you are about to push, and tells you if none has. **It never runs a
+review itself** — a review spawns a dozen model sessions and takes minutes, and
+a push must not silently do that. It asks the question and gets out of the way.
+
+| Variable | Effect |
+|---|---|
+| *(default)* | warns, then pushes |
+| `DEEP_REVIEW_REQUIRE=1` | an unreviewed push fails |
+| `DEEP_REVIEW_SKIP=1` | silent for this one push |
+
+Reviews are matched by the head commit they covered, not by branch name, so
+amending a commit correctly invalidates its review. Installing over a `pre-push`
+hook that deep-review did not write is refused unless you pass `--force`.
 
 ### Any terminal, or CI
 

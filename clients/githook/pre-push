@@ -1,0 +1,63 @@
+#!/bin/sh
+# deep-review pre-push hook.
+#
+# The moment worth catching is after the code is written and before it becomes
+# a pull request: findings can still be folded into the branch quietly, whereas
+# once the PR is open every fix is a visible extra commit.
+#
+# This hook does NOT run a review. A review spawns a dozen or more model
+# sessions and takes minutes; a push must not silently do that. It asks the
+# question and gets out of the way: has anything reviewed the commits you are
+# about to push?
+#
+# Non-blocking by default. Set DEEP_REVIEW_REQUIRE=1 to make an unreviewed push
+# fail instead, and DEEP_REVIEW_SKIP=1 to silence it for one push.
+
+set -u
+
+[ "${DEEP_REVIEW_SKIP:-0}" = "1" ] && exit 0
+
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+runs_dir="$repo_root/.deep-review"
+
+zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+unreviewed=""
+
+# stdin carries one line per ref: <local ref> <local sha> <remote ref> <remote sha>
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+    # A deletion pushes the null sha and has nothing to review.
+    [ "$local_sha" = "$zero" ] && continue
+    [ -z "$local_sha" ] && continue
+
+    reviewed=0
+    if [ -d "$runs_dir" ]; then
+        # A run records the head it reviewed. Matching on that is stricter than
+        # matching on a branch name: amending a commit invalidates the review,
+        # which is the correct behaviour.
+        if grep -ls "\"headSha\": \"$local_sha\"" "$runs_dir"/*/context.json >/dev/null 2>&1; then
+            reviewed=1
+        fi
+    fi
+
+    [ "$reviewed" = "0" ] && unreviewed="$unreviewed $local_sha"
+done
+
+[ -z "$unreviewed" ] && exit 0
+
+short=$(echo "$unreviewed" | cut -c1-9)
+printf '\n' >&2
+printf 'deep-review: no review recorded for%s\n' "$short" >&2
+printf '\n' >&2
+printf '  Review before this becomes a pull request:\n' >&2
+printf '    /deep-review branch          (inside an agent session)\n' >&2
+printf '    npm run review -- branch     (from this repository)\n' >&2
+printf '\n' >&2
+
+if [ "${DEEP_REVIEW_REQUIRE:-0}" = "1" ]; then
+    printf '  DEEP_REVIEW_REQUIRE=1 is set, so this push is blocked.\n' >&2
+    printf '  Push anyway with DEEP_REVIEW_SKIP=1 git push\n\n' >&2
+    exit 1
+fi
+
+printf '  Pushing anyway. Set DEEP_REVIEW_REQUIRE=1 to make this a hard gate.\n\n' >&2
+exit 0

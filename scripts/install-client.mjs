@@ -40,6 +40,21 @@ const TARGETS = {
       'Invoke it with "$deep-review" or just ask for a deep review.',
     ],
   },
+  githook: {
+    label: "pre-push hook",
+    // Hooks are per-repository by definition, so there is no global form.
+    global: null,
+    workspace: (dir) => path.join(dir, ".git", "hooks", "pre-push"),
+    source: path.join(ROOT, "clients", "githook", "pre-push"),
+    executable: true,
+    verify: () => true,
+    after: [
+      "Warns on a push whose commits no review has covered. It never runs a",
+      "review itself - that would spawn a dozen model sessions behind a push.",
+      "DEEP_REVIEW_REQUIRE=1 turns the warning into a hard gate.",
+      "DEEP_REVIEW_SKIP=1 silences it for one push.",
+    ],
+  },
   antigravity: {
     label: "Google Antigravity",
     // Antigravity keeps global workflows under its Gemini home; workspace
@@ -56,7 +71,7 @@ const TARGETS = {
 };
 
 function parseArgs(argv) {
-  const opts = { target: null, workspace: null, global: false, dryRun: false, list: false, help: false };
+  const opts = { target: null, workspace: null, global: false, force: false, dryRun: false, list: false, help: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => {
@@ -67,6 +82,7 @@ function parseArgs(argv) {
     };
     if (arg === "--workspace") opts.workspace = next();
     else if (arg === "--global") opts.global = true;
+    else if (arg === "--force") opts.force = true;
     else if (arg === "--dry-run") opts.dryRun = true;
     else if (arg === "--list") opts.list = true;
     else if (arg === "--help" || arg === "-h") opts.help = true;
@@ -80,9 +96,11 @@ const USAGE = `Usage: node install-client.mjs <client> [options]
 
   codex          install the skill into ~/.codex/skills/
   antigravity    install the workflow globally, or into a workspace
+  githook        install a pre-push hook into one repository
 
   --workspace <dir>  install into that project instead of globally
   --global           force the global location (the default)
+  --force            replace a pre-push hook this tool did not write
   --dry-run          print what would be written, write nothing
   --list             show every client and where its files would go
 
@@ -120,7 +138,7 @@ function main() {
   if (opts.list) {
     for (const [name, target] of Object.entries(TARGETS)) {
       process.stdout.write(`${name}  (${target.label})\n`);
-      process.stdout.write(`  global:    ${target.global()}\n`);
+      process.stdout.write(`  global:    ${target.global ? target.global() : "not supported - per repository"}\n`);
       process.stdout.write(`  workspace: ${target.workspace ? target.workspace("<dir>") : "not supported"}\n`);
     }
     process.stdout.write(`claude  (Claude Code)\n  installed as a plugin, see --help\n`);
@@ -155,9 +173,35 @@ function main() {
     throw new Error(target.verifyHint || `${target.label} does not look installed`);
   }
 
-  const destination = opts.workspace ? target.workspace(path.resolve(opts.workspace)) : target.global();
+  // A hook has no global form, so it installs into the current repository when
+  // no workspace was named.
+  const workspace = opts.workspace || (target.global === null ? process.cwd() : null);
+  if (target.global === null && !workspace) {
+    throw new Error(`${target.label} is per-repository; pass --workspace <dir>`);
+  }
+  const destination = workspace ? target.workspace(path.resolve(workspace)) : target.global();
+
+  if (workspace && target.workspace === TARGETS.githook.workspace && !fs.existsSync(path.join(path.resolve(workspace), ".git"))) {
+    throw new Error(`not a git repository: ${path.resolve(workspace)}`);
+  }
+
   const existed = fs.existsSync(destination);
+  // Overwriting somebody else's hook loses work silently. Ours is recognisable
+  // by its own marker; anything else needs an explicit --force.
+  if (existed && target.executable && !opts.force) {
+    const current = fs.readFileSync(destination, "utf8");
+    if (!current.includes("deep-review pre-push hook")) {
+      throw new Error(
+        `${destination} already exists and was not written by deep-review. ` +
+          `Merge it by hand, or pass --force to replace it.`
+      );
+    }
+  }
+
   const written = copyRendered(target.source, destination, opts.dryRun);
+  if (target.executable && !opts.dryRun) {
+    for (const file of written) fs.chmodSync(file, 0o755);
+  }
 
   process.stdout.write(
     `${opts.dryRun ? "would install" : existed ? "reinstalled" : "installed"} ${target.label}\n` +

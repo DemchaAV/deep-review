@@ -20,9 +20,32 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = path.resolve(HERE, "..");
 const ROOT = path.resolve(SCRIPTS, "..");
 
-function run(script, args) {
-  const res = spawnSync(process.execPath, [path.join(SCRIPTS, script), ...args], { encoding: "utf8" });
+function run(script, args, cwd) {
+  const res = spawnSync(process.execPath, [path.join(SCRIPTS, script), ...args], { encoding: "utf8", cwd });
   return { status: res.status, stdout: res.stdout || "", stderr: res.stderr || "" };
+}
+
+// A repository of our own, with one commit and one uncommitted file. Tests that
+// ran against this checkout passed locally and failed in CI for the dullest
+// reason: the working tree here is dirty and the one on a runner is clean, so
+// "review the working tree" had nothing to review. A test must carry its own
+// world.
+function makeRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deep-review-repo-"));
+  const git = (...args) => {
+    const res = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    if (res.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${res.stderr}`);
+  };
+  git("init", "-b", "main");
+  git("config", "user.email", "test@example.invalid");
+  git("config", "user.name", "Deep Review Tests");
+  git("config", "commit.gpgsign", "false");
+  fs.writeFileSync(path.join(dir, "committed.mjs"), "export const already = 1;\n", "utf8");
+  git("add", "committed.mjs");
+  git("commit", "-m", "the state under review");
+  // Untracked, so the diff is non-empty whatever the outer checkout looks like.
+  fs.writeFileSync(path.join(dir, "pending.mjs"), "export const underReview = 2;\n", "utf8");
+  return dir;
 }
 
 function makeRun(findingsByAngle) {
@@ -304,13 +327,33 @@ test("collect-findings rejects an unknown command", () => {
 // ---------------------------------------------------------- orchestrator
 
 test("a dry run needs no agent CLI, because it spawns nothing", () => {
-  // CI is the faithful version of this test - the runners have no agent CLI at
-  // all - but naming an agent that is certainly absent covers the same branch
-  // locally, where one usually is installed.
-  const res = run("run-review.mjs", ["working", "--effort", "quick", "--dry-run", "--agent", "gemini"]);
+  const repo = makeRepo();
+  const res = run("run-review.mjs", ["working", "--effort", "quick", "--dry-run"], repo);
   assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stdout, /dry run/);
   assert.match(res.stdout, /nothing spawned/);
+  // The prompts are the deliverable of a dry run, so check they were written.
+  const runDir = /run dir (.+)/.exec(res.stdout)[1].trim();
+  assert.ok(fs.existsSync(path.join(runDir, "prompts", "line-by-line.md")));
+});
+
+test("an untracked file is reviewed, since git diff would not show it", () => {
+  const repo = makeRepo();
+  const res = run("prepare-review.mjs", ["working", "--json"], repo);
+  assert.equal(res.status, 0, res.stderr);
+  const context = JSON.parse(res.stdout);
+  assert.ok(
+    context.files.some((f) => f.path === "pending.mjs"),
+    "the brand-new file is the one most worth reviewing"
+  );
+  assert.match(fs.readFileSync(context.paths.codeDiff, "utf8"), /export const underReview/);
+});
+
+test("prepare-review refuses an empty range instead of reviewing nothing", () => {
+  const repo = makeRepo();
+  fs.rmSync(path.join(repo, "pending.mjs"));
+  const res = run("prepare-review.mjs", ["working"], repo);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /nothing to review/);
 });
 
 test("an unknown effort is refused rather than silently treated as standard", () => {
@@ -320,9 +363,47 @@ test("an unknown effort is refused rather than silently treated as standard", ()
 });
 
 test("an unknown angle name is refused rather than quietly skipped", () => {
-  const res = run("run-review.mjs", ["working", "--angles", "line-by-line,telepathy", "--dry-run"]);
+  const repo = makeRepo();
+  const res = run("run-review.mjs", ["working", "--angles", "line-by-line,telepathy", "--dry-run"], repo);
   assert.equal(res.status, 1);
   assert.match(res.stderr, /unknown angle/);
+});
+
+// --------------------------------------------------------------- installer
+
+test("the pre-push hook installs, is executable, and is not global", () => {
+  const repo = makeRepo();
+  const res = run("install-client.mjs", ["githook", "--workspace", repo]);
+  assert.equal(res.status, 0, res.stderr);
+
+  const hook = path.join(repo, ".git", "hooks", "pre-push");
+  assert.ok(fs.existsSync(hook));
+  if (process.platform !== "win32") {
+    assert.ok(fs.statSync(hook).mode & 0o111, "a hook git cannot execute is not a hook");
+  }
+});
+
+test("installing over somebody else's pre-push hook is refused without --force", () => {
+  const repo = makeRepo();
+  const hook = path.join(repo, ".git", "hooks", "pre-push");
+  fs.mkdirSync(path.dirname(hook), { recursive: true });
+  fs.writeFileSync(hook, "#!/bin/sh\n# somebody's existing hook\nexit 0\n", "utf8");
+
+  const refused = run("install-client.mjs", ["githook", "--workspace", repo]);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /already exists/);
+  assert.match(fs.readFileSync(hook, "utf8"), /somebody's existing hook/, "the hook must be untouched");
+
+  const forced = run("install-client.mjs", ["githook", "--workspace", repo, "--force"]);
+  assert.equal(forced.status, 0, forced.stderr);
+  assert.match(fs.readFileSync(hook, "utf8"), /deep-review pre-push hook/);
+});
+
+test("the hook installer refuses a directory that is not a git repository", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deep-review-plain-"));
+  const res = run("install-client.mjs", ["githook", "--workspace", dir]);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /not a git repository/);
 });
 
 // ------------------------------------------------------------- consistency
