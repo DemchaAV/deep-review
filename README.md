@@ -39,8 +39,8 @@ is told the capability exists.
 | **Claude Code** | native — ten `Agent` calls in one message | `/deep-review` | plugin marketplace |
 | **Codex CLI** | `run-review.mjs` spawns `codex exec` per angle | `$deep-review` | `install-client.mjs codex` |
 | **Google Antigravity** | `run-review.mjs` spawns `gemini` per angle | `/deep-review` | `install-client.mjs antigravity` |
-| **Anything else / CI** | same script, `--agent <cli>` | `node <checkout>/scripts/run-review.mjs` |
-| **git pre-push hook** | — asks, never runs | automatic on `git push` | clone and run |
+| **Anything else / CI** | same script, `--agent <cli>` | `node <checkout>/scripts/run-review.mjs` | clone and run |
+| **git pre-push hook** | — asks, never runs | automatic on `git push` | `install-client.mjs githook` |
 
 Claude Code gets the richest experience because it has a real parallel-subagent
 primitive. Everywhere else, `scripts/run-review.mjs` *is* the fan-out: it writes
